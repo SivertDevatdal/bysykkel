@@ -44,8 +44,14 @@ export default function App() {
   const [stationsResponse, setStationsResponse] = useState<GbfsStationsResponse | null>(null);
   const [statusResponse, setStatusResponse] = useState<GbfsStatusResponse | null>(null);
   const [scoreEngine, setScoreEngine] = useState<BysykkelWasm | null>(null);
-  const [originQuery, setOriginQuery] = useState("St. Olavs plass");
-  const [destinationQuery, setDestinationQuery] = useState("Nationaltheatret");
+  // Origin/destination start blank: the previous defaults ("St. Olavs plass",
+  // "Nationaltheatret") silently overrode GPS — the typed-origin branch in the
+  // priority logic wins as long as the query is non-empty, so tapping the
+  // locate button while the defaults sat in the inputs did nothing visible.
+  // Blank inputs make GPS the natural fallback and surface the "Bruk min
+  // posisjon" affordance.
+  const [originQuery, setOriginQuery] = useState("");
+  const [destinationQuery, setDestinationQuery] = useState("");
   const [originPlace, setOriginPlace] = useState<GeocodedPlace | null>(null);
   const [destinationPlace, setDestinationPlace] = useState<GeocodedPlace | null>(null);
   const [locationState, setLocationState] = useState<LocationState>({
@@ -168,6 +174,39 @@ export default function App() {
     return ids;
   }, [best]);
 
+  const dataReady = stationsResponse !== null && statusResponse !== null;
+  const usingMyLocation = !trimmedOrigin && locationState.status === "watching";
+  const handleUseMyLocation = () => {
+    setOriginQuery("");
+    setLocationState((prev) => ({
+      status: "watching",
+      position: prev.position,
+      accuracyM: prev.accuracyM,
+      message: null,
+    }));
+  };
+
+  // One source of truth for the planner's status line. Order matters: any
+  // alert (error / geolocation failure) is rendered separately above; this
+  // covers the non-error informational states. Without this guard the
+  // previous "Fant ingen rute mellom punktene." was shown the instant the
+  // planner opened on a fresh load (no origin yet) — misleading because the
+  // user hadn't entered a trip.
+  let plannerMessage: string | null = null;
+  if (!error && !locationState.message) {
+    if (!dataReady) {
+      plannerMessage = "Henter live data …";
+    } else if (locationState.status === "watching" && !locationState.position && !trimmedOrigin) {
+      plannerMessage = "Henter din posisjon …";
+    } else if (!originAnchor) {
+      plannerMessage = "Skriv inn et startpunkt eller bruk min posisjon.";
+    } else if (!destinationAnchor) {
+      plannerMessage = "Skriv inn et reisemål.";
+    } else if (!best) {
+      plannerMessage = "Fant ingen rute mellom punktene.";
+    }
+  }
+
   return (
     <div className="app">
       <MapView
@@ -257,8 +296,18 @@ export default function App() {
                 list="station-options"
                 value={originQuery}
                 onChange={(event) => setOriginQuery(event.target.value)}
-                placeholder={locationState.status === "watching" ? "Min posisjon" : "Hvor er du?"}
+                placeholder={usingMyLocation ? "Min posisjon" : "Hvor er du?"}
               />
+              <button
+                type="button"
+                className={`bottom-card__locate${usingMyLocation ? " bottom-card__locate--active" : ""}`}
+                onClick={handleUseMyLocation}
+                aria-label="Bruk min posisjon som startpunkt"
+                aria-pressed={usingMyLocation}
+                title="Bruk min posisjon"
+              >
+                <LocateIcon />
+              </button>
               <span
                 className="bottom-card__bullet bottom-card__bullet--destination"
                 aria-hidden="true"
@@ -269,6 +318,7 @@ export default function App() {
                 onChange={(event) => setDestinationQuery(event.target.value)}
                 placeholder="Hvor skal du?"
               />
+              <span aria-hidden="true" />
               <datalist id="station-options">
                 {stations.map((s) => (
                   <option key={s.station_id} value={s.name} />
@@ -279,12 +329,7 @@ export default function App() {
               <div className="bottom-card__msg alert">{locationState.message}</div>
             )}
             {error && <div className="bottom-card__msg alert">{error}</div>}
-            {!error && !locationState.message && (!stationsResponse || !statusResponse) && (
-              <div className="bottom-card__msg">Henter live data …</div>
-            )}
-            {!error && stationsResponse && statusResponse && !best && (
-              <div className="bottom-card__msg">Fant ingen rute mellom punktene.</div>
-            )}
+            {plannerMessage && <div className="bottom-card__msg">{plannerMessage}</div>}
             {best && (
               <RouteSummary
                 rec={best}
@@ -598,6 +643,8 @@ function PickupPicker({
               </span>
               <span className="pickup-row__meta">
                 <span className="pickup-row__metarow">
+                  <span className="pickup-row__time">{c.totalMinutes} min</span>
+                  <span className="pickup-row__sep" aria-hidden="true">·</span>
                   <span className="pickup-row__bikes">
                     {c.station.status.num_bikes_available} sykler
                   </span>

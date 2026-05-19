@@ -82,6 +82,12 @@ export type Recommendation = {
   quality: number;
   // Combined display score for the pickup: pickupProb × quality.
   pickupScore: number;
+  // Sort key: expected trip time including a penalty for low pickup/dropoff
+  // probability. Smaller = better. The previous score (availability × quality)
+  // ignored absolute travel time, so a pickup 500 m away with one extra bike
+  // could beat one 100 m away — the user reported this as "not the most
+  // optimal route". This metric makes time the primary axis.
+  effectiveMinutes: number;
 };
 
 export type PickupCandidate = {
@@ -92,6 +98,12 @@ export type PickupCandidate = {
   quality: number;
   // Combined display score: prob × quality. This is what the row shows as %.
   score: number;
+  // Total trip time (walk + ride + walk) in minutes, ceiled. Surfaced to the
+  // UI so users can compare alternatives by time, not just by % chance.
+  totalMinutes: number;
+  // Same sort key idea as on Recommendation: total time + a per-minute penalty
+  // for an unlikely-to-have-bikes station. Lower is better.
+  effectiveMinutes: number;
 };
 
 export const CONFIDENCE_LABELS: readonly ConfidenceLabel[] = ["Low", "Medium", "High"] as const;
@@ -105,6 +117,28 @@ export const PICKUP_CANDIDATE_LIMIT = 8;
 export const MAX_NEARBY_PICKUP_RADIUS_M = 2000;
 
 const RIDE_DETOUR_FACTOR = 1.28;
+
+// How many minutes of "real" trip time we charge a route for low confidence
+// of finding a bike (or a free dock). A pickup with ~0% probability of bikes
+// makes us add roughly a 6-minute penalty — about the time to walk to a
+// backup station — and a missing dock costs about half that. Tuned so a
+// 100% reliable but 4-min-longer route still wins against a risky shortcut.
+const PICKUP_FAILURE_PENALTY_MIN = 6;
+const DROPOFF_FAILURE_PENALTY_MIN = 3;
+
+function effectiveTripMinutes(
+  totalMinutes: number, pickupProb: number, dropoffProb: number,
+): number {
+  const pickupPenalty = (1 - clamp01(pickupProb)) * PICKUP_FAILURE_PENALTY_MIN;
+  const dropoffPenalty = (1 - clamp01(dropoffProb)) * DROPOFF_FAILURE_PENALTY_MIN;
+  return totalMinutes + pickupPenalty + dropoffPenalty;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (value >= 1) return 1;
+  return value;
+}
 
 // Geocoder-overlay helper: stations whose normalized name (or token bag) matches
 // a typed query are exposed to the UI's resolveStation logic; reused here so
@@ -268,7 +302,8 @@ export function buildRecommendations(
       const walkToPickupMin = walkToPickupM / 80;
       const rideMin = rideM / 230;
       const walkFromDropoffMin = walkFromDropoffM / 80;
-      const totalMinutes = Math.ceil(walkToPickupMin + rideMin + walkFromDropoffMin);
+      const rawTotalMin = walkToPickupMin + rideMin + walkFromDropoffMin;
+      const totalMinutes = Math.ceil(rawTotalMin);
       const pickupProb = pickupAvailabilityProbability(pickup, walkToPickupMin, now);
       const dropoffProb = dropoffAvailabilityProbability(
         dropoff, walkToPickupMin + rideMin, now,
@@ -277,16 +312,22 @@ export function buildRecommendations(
         walkToPickupM, rideM, walkFromDropoffM,
       );
       const pickupScore = pickupProb * quality;
+      const effectiveMinutes = effectiveTripMinutes(rawTotalMin, pickupProb, dropoffProb);
       recs.push({
         id: `${pickup.station_id}-${dropoff.station_id}`,
         score, confidence, pickup, dropoff,
         walkToPickupM, rideM, walkFromDropoffM, totalMinutes,
         reason: buildReason(pickup, dropoff, walkToPickupM, walkFromDropoffM),
-        pickupProb, dropoffProb, quality, pickupScore,
+        pickupProb, dropoffProb, quality, pickupScore, effectiveMinutes,
       });
     }
   }
-  return recs.sort((a, b) => b.score - a.score).slice(0, 24);
+  // Sort by expected trip time (low to high). The previous sort used the
+  // WASM "availability × quality" score, which treats two routes with the
+  // same ride length as equal regardless of walk-to-pickup distance — that
+  // mis-picked a slightly-better-stocked far station over the obvious close
+  // one. Effective minutes pulls walk distance into the comparison directly.
+  return recs.sort((a, b) => a.effectiveMinutes - b.effectiveMinutes).slice(0, 24);
 }
 
 export function buildPickupCandidates(
@@ -316,6 +357,7 @@ export function buildPickupCandidates(
   // compared apples-to-apples for the same destination.
   const dropoff = best?.dropoff ?? null;
   const walkFromDropoffM = best?.walkFromDropoffM ?? 0;
+  const dropoffProb = best?.dropoffProb ?? 1;
   return chosen
     .map<PickupCandidate>((station) => {
       const walkM = distanceMeters(originAnchor, station);
@@ -325,12 +367,18 @@ export function buildPickupCandidates(
       const quality = dropoff
         ? scoreEngine.bysykkel_trip_quality(walkM, rideM, walkFromDropoffM)
         : 1;
-      return { station, walkM, walkMin, prob, quality, score: prob * quality };
+      const rawTotalMin = walkMin + rideM / 230 + walkFromDropoffM / 80;
+      const totalMinutes = Math.ceil(rawTotalMin);
+      const effectiveMinutes = effectiveTripMinutes(rawTotalMin, prob, dropoffProb);
+      return {
+        station, walkM, walkMin, prob, quality, score: prob * quality,
+        totalMinutes, effectiveMinutes,
+      };
     })
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return a.walkM - b.walkM;
-    });
+    // Same effective-minutes sort as the main recommendation list, so the
+    // picker's order matches the best-route logic: shortest expected trip
+    // first, with low-confidence pickups bumped down by a time penalty.
+    .sort((a, b) => a.effectiveMinutes - b.effectiveMinutes);
 }
 
 // ----- WASM loading -----

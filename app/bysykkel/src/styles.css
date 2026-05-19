@@ -201,7 +201,7 @@ input {
 
 .bottom-card__inputs {
   display: grid;
-  grid-template-columns: 16px 1fr;
+  grid-template-columns: 16px 1fr 36px;
   gap: 8px 10px;
   align-items: center;
 }
@@ -245,6 +245,42 @@ input {
 .bottom-card__inputs input:disabled {
   background: var(--bs-surface);
   color: var(--bs-ink-mute);
+}
+
+.bottom-card__locate {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--bs-surface);
+  border: 1px solid var(--bs-line);
+  color: var(--bs-ink-soft);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.bottom-card__locate:hover {
+  background: var(--bs-line);
+  color: var(--bs-ink);
+}
+
+.bottom-card__locate--active {
+  background: var(--bs-blue);
+  border-color: var(--bs-blue);
+  color: #ffffff;
+}
+
+.bottom-card__locate--active:hover {
+  background: var(--bs-blue-dark);
+  border-color: var(--bs-blue-dark);
+  color: #ffffff;
+}
+
+.bottom-card__locate:focus-visible {
+  outline: 2px solid var(--bs-blue);
+  outline-offset: 2px;
 }
 
 .bottom-card__msg {
@@ -611,6 +647,11 @@ input {
   align-items: baseline;
   gap: 6px;
   white-space: nowrap;
+}
+
+.pickup-row__time {
+  color: var(--bs-ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .pickup-row__maps {
