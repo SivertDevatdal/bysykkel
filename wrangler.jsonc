@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bysykkel",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-04",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "workers_dev": true,
+  "vars": {
+    "OSLO_BYSYKKEL_CLIENT_IDENTIFIER": "bysykkel-demo",
+    "ENTUR_CLIENT_NAME": "bysykkel-demo"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "bysykkel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:wasm && npm run build:app",
+    "build:app": "vite build --config app/bysykkel/vite.config.ts",
+    "build:wasm": "node scripts/build-bysykkel-wasm.mjs",
+    "check": "tsc --noEmit && tsc -p app/bysykkel/tsconfig.json",
+    "dev": "wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "test:core": "cc src/bysykkel-core/bysykkel_score.c src/bysykkel-core/bysykkel_score_test.c -o /tmp/bysykkel_score_test && /tmp/bysykkel_score_test",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.21",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^8.0.10",
+    "wabt": "^1.0.39",
+    "wrangler": "latest"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  }
+}
