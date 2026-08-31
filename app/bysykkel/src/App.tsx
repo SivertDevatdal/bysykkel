@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import {
-  buildPickupCandidates,
-  buildRecommendations,
   instantiateScoreEngine,
   isEnabled,
   joinStationsWithStatus,
+  planTrips,
   resolveStation,
 } from "./scoring";
 import type {
@@ -13,9 +12,9 @@ import type {
   GbfsStationsResponse,
   GbfsStatusResponse,
   GeoPoint,
-  PickupCandidate,
-  Recommendation,
   Station,
+  Trip,
+  TripPlan,
 } from "./scoring";
 
 type LocationState = {
@@ -147,17 +146,13 @@ export default function App() {
     : (locationState.position ?? typedOriginAnchor);
   const destinationAnchor = destinationPlace ?? destinationStation;
 
-  const recommendations = useMemo(() => {
-    if (!originAnchor || !destinationAnchor || !scoreEngine) return [];
-    return buildRecommendations(stations, originAnchor, destinationAnchor, scoreEngine);
+  const plan: TripPlan | null = useMemo(() => {
+    if (!originAnchor || !destinationAnchor || !scoreEngine) return null;
+    if (stations.length === 0) return null;
+    return planTrips(stations, originAnchor, destinationAnchor, scoreEngine);
   }, [destinationAnchor, originAnchor, scoreEngine, stations]);
 
-  const best = recommendations[0] ?? null;
-
-  const pickupCandidates = useMemo(() => {
-    if (!originAnchor || stations.length === 0 || !scoreEngine) return [];
-    return buildPickupCandidates(stations, originAnchor, best, scoreEngine);
-  }, [best, originAnchor, scoreEngine, stations]);
+  const best = plan?.best ?? null;
 
   const highlightedIds = useMemo(() => {
     const ids = new Set<string>();
@@ -230,7 +225,7 @@ export default function App() {
             <RouteIcon />
             <span>Planlegg tur</span>
             {best && (
-              <span className="badge-inline">{best.totalMinutes} min</span>
+              <span className="badge-inline">{Math.round(best.totalMinutes)} min</span>
             )}
           </button>
         )}
@@ -282,22 +277,31 @@ export default function App() {
             {!error && !locationState.message && (!stationsResponse || !statusResponse) && (
               <div className="bottom-card__msg">Henter live data …</div>
             )}
-            {!error && stationsResponse && statusResponse && !best && (
-              <div className="bottom-card__msg">Fant ingen rute mellom punktene.</div>
+            {!error && stationsResponse && statusResponse && plan && !best && (
+              <div className="bottom-card__msg">{noTripMessage(plan)}</div>
             )}
-            {best && (
-              <RouteSummary
-                rec={best}
-                pickerOpen={pickerOpen}
-                onTogglePicker={() => setPickerOpen((open) => !open)}
-                hasCandidates={pickupCandidates.length > 0}
-              />
-            )}
-            {best && pickerOpen && (
-              <PickupPicker
-                candidates={pickupCandidates}
-                selectedId={best.pickup.station_id}
-              />
+            {plan && best && (
+              <>
+                <RouteSummary
+                  trip={best}
+                  pickerOpen={pickerOpen}
+                  onTogglePicker={() => setPickerOpen((open) => !open)}
+                  alternativeCount={plan.pickupOptions.length - 1}
+                />
+                {plan.walkIsFaster && (
+                  <div className="bottom-card__msg">
+                    Det går fortere å gå hele veien
+                    ({formatDistance(plan.directWalkM)}, ca.{" "}
+                    {Math.round(plan.directWalkMinutes)} min).
+                  </div>
+                )}
+                {pickerOpen && (
+                  <PickupPicker
+                    options={plan.pickupOptions}
+                    selectedId={best.pickup.station_id}
+                  />
+                )}
+              </>
             )}
           </>
         )}
@@ -327,7 +331,7 @@ function MapView({
   stations: Station[];
   userLocation: GeoPoint | null;
   highlightedIds: Set<string>;
-  bestRoute: Recommendation | null;
+  bestRoute: Trip | null;
   originAnchor: GeoPoint | null;
   destinationAnchor: GeoPoint | null;
   showRoute: boolean;
@@ -511,52 +515,56 @@ function MapView({
 }
 
 function RouteSummary({
-  rec,
+  trip,
   pickerOpen,
   onTogglePicker,
-  hasCandidates,
+  alternativeCount,
 }: {
-  rec: Recommendation;
+  trip: Trip;
   pickerOpen: boolean;
   onTogglePicker: () => void;
-  hasCandidates: boolean;
+  alternativeCount: number;
 }) {
-  const tone = probabilityTone(rec.pickupScore);
-  const bikesNow = rec.pickup.status.num_bikes_available;
+  const bikes = trip.pickup.status.num_bikes_available;
+  const docks = trip.dropoff.status.num_docks_available;
   const title = pickerOpen
-    ? "Skjul stasjoner i nærheten"
-    : `Sjanse for sykkel × verdi av sykkelturen (${bikesNow} sykler nå) – trykk for å se stasjoner i nærheten`;
+    ? "Skjul andre startstasjoner"
+    : `${alternativeCount} andre startstasjoner – trykk for å se dem`;
   return (
-    <div className={`route-summary route-summary--${tone}`}>
+    <div className="route-summary">
       <div className="route-summary__time">
-        <strong>{rec.totalMinutes}</strong>
+        <strong>{Math.round(trip.totalMinutes)}</strong>
         <span>min</span>
       </div>
       <div className="route-summary__legs">
         <span className="leg">
           <span className="leg__icon">🚶</span>
-          {formatDistance(rec.walkToPickupM)}
+          {formatDistance(trip.walkToPickupM)}
         </span>
         <span className="leg leg--ride">
           <span className="leg__icon">🚲</span>
-          {formatDistance(rec.rideM)}
+          {formatDistance(trip.rideM)}
         </span>
         <span className="leg">
           <span className="leg__icon">🚶</span>
-          {formatDistance(rec.walkFromDropoffM)}
+          {formatDistance(trip.walkFromDropoffM)}
         </span>
       </div>
       <button
         type="button"
-        className={`route-summary__bikes${pickerOpen ? " route-summary__bikes--open" : ""}`}
+        className={`route-summary__stands${pickerOpen ? " route-summary__stands--open" : ""}`}
         onClick={onTogglePicker}
         aria-expanded={pickerOpen}
         aria-label={title}
         title={title}
-        disabled={!hasCandidates}
+        disabled={alternativeCount < 1}
       >
-        <strong>{formatPercent(rec.pickupScore)}</strong>
-        <span className="route-summary__lbl">sjanse</span>
+        <span className="route-summary__count">
+          <strong>{bikes}</strong> {bikes === 1 ? "sykkel" : "sykler"}
+        </span>
+        <span className="route-summary__count">
+          <strong>{docks}</strong> {docks === 1 ? "lås" : "låser"}
+        </span>
         <span className="route-summary__caret" aria-hidden="true">
           <ChevronDownIcon />
         </span>
@@ -566,61 +574,65 @@ function RouteSummary({
 }
 
 function PickupPicker({
-  candidates,
+  options,
   selectedId,
 }: {
-  candidates: PickupCandidate[];
+  options: Trip[];
   selectedId: string;
 }) {
-  if (candidates.length === 0) return null;
+  if (options.length === 0) return null;
+  const fastest = options[0].totalMinutes;
   return (
     <div className="pickup-picker">
-      <div className="pickup-picker__head">Stasjoner i nærheten av startpunktet</div>
+      <div className="pickup-picker__head">Start fra en annen stasjon</div>
       <ul className="pickup-picker__list">
-        {candidates.map((c) => {
-          const tone = probabilityTone(c.score);
-          const isSelected = c.station.station_id === selectedId;
+        {options.map((option) => {
+          const station = option.pickup;
+          const isSelected = station.station_id === selectedId;
+          const extraMinutes = Math.round(option.totalMinutes - fastest);
           return (
             <li
-              key={c.station.station_id}
+              key={station.station_id}
               className={`pickup-row${isSelected ? " pickup-row--selected" : ""}`}
             >
-              <span className={`pickup-row__pct pickup-row__pct--${tone}`}>
-                {formatPercent(c.score)}
+              <span className="pickup-row__time">
+                <strong>{Math.round(option.totalMinutes)}</strong>
+                <span className="pickup-row__unit">min</span>
               </span>
-              <span className="pickup-row__name" title={c.station.name}>
-                {c.station.name}
-                {isSelected && (
-                  <span className="pickup-row__chip" aria-label="Valgt avhentingsstasjon">
-                    Valgt
+              <span className="pickup-row__name" title={station.name}>
+                {station.name}
+                {isSelected ? (
+                  <span className="pickup-row__chip" aria-label="Raskeste startstasjon">
+                    Raskest
                   </span>
-                )}
+                ) : extraMinutes > 0 ? (
+                  <span className="pickup-row__delta">+{extraMinutes} min</span>
+                ) : null}
               </span>
               <span className="pickup-row__meta">
                 <span className="pickup-row__metarow">
                   <span className="pickup-row__bikes">
-                    {c.station.status.num_bikes_available} sykler
+                    {station.status.num_bikes_available}{" "}
+                    {station.status.num_bikes_available === 1 ? "sykkel" : "sykler"}
                   </span>
                   <span className="pickup-row__sep" aria-hidden="true">·</span>
-                  <span className="pickup-row__walk">{formatDistance(c.walkM)}</span>
+                  <span className="pickup-row__walk">{formatDistance(option.walkToPickupM)}</span>
                 </span>
                 <span className="pickup-row__maps">
                   <a
                     className="pickup-row__maplink"
-                    href={appleMapsUrl(c.station)}
+                    href={appleMapsUrl(station)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
                   >
                     Apple Maps
                   </a>
                   <span className="pickup-row__sep" aria-hidden="true">·</span>
                   <a
                     className="pickup-row__maplink"
-                    href={googleMapsUrl(c.station)}
+                    href={googleMapsUrl(station)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
                   >
                     Google Maps
                   </a>
@@ -634,20 +646,19 @@ function PickupPicker({
   );
 }
 
-function formatPercent(prob: number): string {
-  // Loosened from [1%, 99%] to [0%, 100%] so users can tell apart "essentially
-  // certain" from "merely high" and "essentially nothing" from "1 in 100".
-  // The previous clamp was hiding the bug where pickupScore quietly rounded
-  // to 99% for both 0.99 (raw prob, formula not applied) and 1.0.
-  if (!Number.isFinite(prob) || prob <= 0) return "0%";
-  const pct = Math.round(Math.max(0, Math.min(1, prob)) * 100);
-  return `${pct}%`;
-}
-
-function probabilityTone(prob: number): "high" | "medium" | "low" {
-  if (prob >= 0.85) return "high";
-  if (prob >= 0.55) return "medium";
-  return "low";
+// Says *which* half of the plan came up empty, so the user knows whether to
+// move the start or the destination.
+function noTripMessage(plan: TripPlan): string {
+  if (plan.noPickupNearby && plan.noDropoffNearby) {
+    return "Ingen stativ med sykler i nærheten av start, og ingen ledige låser ved målet.";
+  }
+  if (plan.noPickupNearby) {
+    return "Ingen stativ med ledige sykler i nærheten av startpunktet.";
+  }
+  if (plan.noDropoffNearby) {
+    return "Ingen stativ med ledige låser i nærheten av målet.";
+  }
+  return "Fant ingen rute mellom punktene.";
 }
 
 function ProfileIcon() {

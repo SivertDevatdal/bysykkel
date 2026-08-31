@@ -10,9 +10,9 @@ const clangArgs = [
   "-O3",
   "-nostdlib",
   "-Wl,--no-entry",
-  "-Wl,--export=bysykkel_score_trip",
-  "-Wl,--export=bysykkel_trip_quality",
-  "-Wl,--export=bysykkel_confidence_band",
+  "-Wl,--export=bysykkel_trip_feasible",
+  "-Wl,--export=bysykkel_trip_minutes",
+  "-Wl,--export=bysykkel_walk_minutes",
   "-Wl,--allow-undefined",
   "src/bysykkel-core/bysykkel_score.c",
   "-o",
@@ -67,138 +67,77 @@ async function buildWatFallback() {
 
 const bysykkelScoreWat = String.raw`
 (module
-  (func $clampf (param $value f32) (param $min f32) (param $max f32) (result f32)
-    local.get $value
-    local.get $min
-    f32.lt
-    if (result f32)
-      local.get $min
-    else
-      local.get $value
-      local.get $max
-      f32.gt
-      if (result f32)
-        local.get $max
-      else
-        local.get $value
-      end
+  ;; Hand-written mirror of src/bysykkel-core/bysykkel_score.c, used only when
+  ;; clang is unavailable. Keep the constants below in sync with
+  ;; bysykkel_score.h — the failtest compares both builds against the same
+  ;; expectations, so a drift here shows up as a failing time assertion.
+  ;;   walk 80 m/min, ride 230 m/min, handling 1.5 min
+
+  (func $bysykkel_trip_feasible
+    (param $bikes i32) (param $docks i32)
+    (param $is_renting i32) (param $is_returning i32)
+    (param $min_bikes i32) (param $min_docks i32)
+    (result i32)
+    (local $need_bikes i32)
+    (local $need_docks i32)
+
+    local.get $is_renting
+    i32.eqz
+    if
+      i32.const 0
+      return
     end
+
+    local.get $is_returning
+    i32.eqz
+    if
+      i32.const 0
+      return
+    end
+
+    ;; need = max(min, 1)
+    local.get $min_bikes
+    i32.const 1
+    i32.lt_s
+    if (result i32)
+      i32.const 1
+    else
+      local.get $min_bikes
+    end
+    local.set $need_bikes
+
+    local.get $min_docks
+    i32.const 1
+    i32.lt_s
+    if (result i32)
+      i32.const 1
+    else
+      local.get $min_docks
+    end
+    local.set $need_docks
+
+    local.get $bikes
+    local.get $need_bikes
+    i32.lt_s
+    if
+      i32.const 0
+      return
+    end
+
+    local.get $docks
+    local.get $need_docks
+    i32.lt_s
+    if
+      i32.const 0
+      return
+    end
+
+    i32.const 1
   )
 
-  (func $availability_score (param $available i32) (param $capacity i32) (result f32)
-    local.get $available
-    i32.const 0
-    i32.le_s
-    local.get $capacity
-    i32.const 0
-    i32.le_s
-    i32.or
-    if (result f32)
-      f32.const 0
-    else
-      local.get $available
-      f32.convert_i32_s
-      f32.const 4
-      f32.div
-      f32.const 0
-      f32.const 1
-      call $clampf
-      f32.const 0.7
-      f32.mul
-
-      local.get $available
-      f32.convert_i32_s
-      local.get $capacity
-      f32.convert_i32_s
-      f32.div
-      f32.const 0.35
-      f32.div
-      f32.const 0
-      f32.const 1
-      call $clampf
-      f32.const 0.3
-      f32.mul
-      f32.add
-    end
-  )
-
-  (func $bysykkel_trip_quality
-    (export "bysykkel_trip_quality")
-    (param $walk_to_pickup_m f32)
-    (param $ride_m f32)
-    (param $walk_from_dropoff_m f32)
+  (func $bysykkel_trip_minutes
+    (param $walk_to_pickup_m f32) (param $ride_m f32) (param $walk_from_dropoff_m f32)
     (result f32)
-    (local $base f32)
-    (local $walk_total f32)
-    (local $walk_excess f32)
-    (local $walk_penalty f32)
-
-    local.get $ride_m
-    f32.const 0
-    f32.le
-    if (result f32)
-      f32.const 0
-    else
-      local.get $ride_m
-      f32.const 300
-      f32.sub
-      f32.const 2700
-      f32.div
-      f32.const 0
-      f32.const 1
-      call $clampf
-      local.set $base
-
-      local.get $walk_to_pickup_m
-      local.get $walk_from_dropoff_m
-      f32.add
-      local.set $walk_total
-
-      local.get $walk_total
-      f32.const 600
-      f32.sub
-      local.set $walk_excess
-
-      local.get $walk_excess
-      f32.const 0
-      f32.lt
-      if
-        f32.const 0
-        local.set $walk_excess
-      end
-
-      local.get $walk_excess
-      f32.const 2400
-      f32.div
-      f32.const 0
-      f32.const 0.6
-      call $clampf
-      local.set $walk_penalty
-
-      local.get $base
-      f32.const 1
-      local.get $walk_penalty
-      f32.sub
-      f32.mul
-    end
-  )
-
-  (func $bysykkel_score_trip
-    (export "bysykkel_score_trip")
-    (param $walk_to_pickup_m f32)
-    (param $ride_m f32)
-    (param $walk_from_dropoff_m f32)
-    (param $bikes_available i32)
-    (param $docks_available i32)
-    (param $pickup_capacity i32)
-    (param $dropoff_capacity i32)
-    (param $pickup_is_renting i32)
-    (param $dropoff_is_returning i32)
-    (result f32)
-    (local $pickup f32)
-    (local $dropoff f32)
-    (local $availability f32)
-    (local $quality f32)
 
     local.get $walk_to_pickup_m
     f32.const 0
@@ -211,84 +150,43 @@ const bysykkelScoreWat = String.raw`
     f32.const 0
     f32.lt
     i32.or
-    local.get $pickup_is_renting
-    i32.const 0
-    i32.eq
-    i32.or
-    local.get $dropoff_is_returning
-    i32.const 0
-    i32.eq
-    i32.or
-    if (result f32)
-      f32.const 0
-    else
-      local.get $bikes_available
-      local.get $pickup_capacity
-      call $availability_score
-      local.set $pickup
-
-      local.get $docks_available
-      local.get $dropoff_capacity
-      call $availability_score
-      local.set $dropoff
-
-      local.get $pickup
-      f32.const 0
-      f32.eq
-      local.get $dropoff
-      f32.const 0
-      f32.eq
-      i32.or
-      if (result f32)
-        f32.const 0
-      else
-        local.get $pickup
-        f32.const 0.5
-        f32.mul
-        local.get $dropoff
-        f32.const 0.5
-        f32.mul
-        f32.add
-        local.set $availability
-
-        local.get $walk_to_pickup_m
-        local.get $ride_m
-        local.get $walk_from_dropoff_m
-        call $bysykkel_trip_quality
-        local.set $quality
-
-        local.get $availability
-        local.get $quality
-        f32.mul
-        f32.const 100
-        f32.mul
-        f32.const 0
-        f32.const 100
-        call $clampf
-      end
+    if
+      f32.const -1
+      return
     end
+
+    local.get $walk_to_pickup_m
+    local.get $walk_from_dropoff_m
+    f32.add
+    f32.const 80
+    f32.div
+
+    local.get $ride_m
+    f32.const 230
+    f32.div
+    f32.add
+
+    f32.const 1.5
+    f32.add
   )
 
-  (func $bysykkel_confidence_band
-    (export "bysykkel_confidence_band")
-    (param $score f32)
-    (result i32)
-    local.get $score
-    f32.const 75
-    f32.ge
-    if (result i32)
-      i32.const 2
-    else
-      local.get $score
-      f32.const 45
-      f32.ge
-      if (result i32)
-        i32.const 1
-      else
-        i32.const 0
-      end
+  (func $bysykkel_walk_minutes (param $direct_m f32) (result f32)
+    local.get $direct_m
+    f32.const 0
+    f32.lt
+    if
+      f32.const -1
+      return
     end
+
+    local.get $direct_m
+    f32.const 80
+    f32.div
   )
+
+  (export "bysykkel_trip_feasible" (func $bysykkel_trip_feasible))
+  (export "bysykkel_trip_minutes" (func $bysykkel_trip_minutes))
+  (export "bysykkel_walk_minutes" (func $bysykkel_walk_minutes))
 )
 `;
 
